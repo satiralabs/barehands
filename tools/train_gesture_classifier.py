@@ -8,7 +8,8 @@ import sys
 from pathlib import Path
 
 
-LABELS = ("pinch", "claw", "open")
+LABELS = ("pinch", "claw", "open", "fist", "point", "victory", "rock",
+          "littleFinger", "call", "thumbsUp", "thumbsDown")
 
 
 def sigmoid(value):
@@ -62,6 +63,14 @@ def main():
     if len(users - {""}) < 2:
         print("warning: evaluate on recordings from entirely unseen users before deployment",
               file=sys.stderr)
+    # Only train labels with real support in this dataset; a classifier
+    # trained on zero positives is noise dressed as a model.
+    present = {label for label in LABELS
+               if sum(1 for row in rows if row["label"] == label) >= 20}
+    skipped = [label for label in LABELS if label not in present]
+    if skipped:
+        print(f"skipping labels with <20 positives: {', '.join(skipped)}",
+              file=sys.stderr)
     random.seed(42)
     model = {
         "schema": "barehands-landmark-classifier/v1",
@@ -69,7 +78,8 @@ def main():
             __import__("datetime").timezone.utc).isoformat(),
         "featureNames": feature_names,
         "normalization": {"mean": means, "std": deviations},
-        "classifiers": {label: train(rows, label) for label in LABELS},
+        "classifiers": {label: train(rows, label)
+                        for label in LABELS if label in present},
         "productionReady": False,
         "note": "Run in shadow mode and validate on held-out users before enabling."
     }

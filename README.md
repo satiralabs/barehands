@@ -75,6 +75,37 @@ experimental trainer lives at `tools/train_gesture_classifier.py`; its models
 are intentionally marked non-production until evaluated on recordings from
 entirely held-out users.
 
+### Board gestures in the engine
+
+The board's gesture laws — previously only inside `stage.html`, interleaved
+with DOM and item code — now also live in `gesture-engine.mjs` as pure,
+unit-tested recognizers (no DOM, viewport-normalized coordinates, every
+threshold in the shared gesture profile, so the Lab can calibrate them):
+
+- `BoardGestureRecognizer` (one hand) emits `tap`, `pinchstart`/`pinchend`,
+  `dragstart`/`drag`/`dragend`, `throw` (peak velocity + follow-through,
+  with the sub-120 ms grip and post-stretch guards), `holdprogress`/`hold`
+  (the ~1 s stillness promotion, drift re-anchors), `scrubstart`/`scrub`/
+  `scrubend` (the empty-pinch exploded-view scrub), and `ghostpinch` (a
+  pinch born at wave speed cannot grab; it self-heals as the hand settles).
+- `TwoHandScale` — two-hand stretch is scale only (0.12–12x, with the carry
+  midpoint); rotation belongs to the one-hand hold latch, `RotateSession`.
+- `ClapRecognizer` — the deliberate prayer clap: hands apart first, then
+  palms together with fingers up and open hands, an 800 ms post-pinch
+  blackout, a cooldown, and the merged-detection vanish read.
+- `ForcePullRecognizer` + `clawAimRay` — the claw: it arms only when the
+  hooks form from a fresh open hand, aims along the claw mouth's normal in
+  a narrow cone, builds strain over a 4 s ramp, unlocks the snap at 2 s,
+  and fires `pull` on the snap (an early snap is a `pullmisfire`).
+- `replayBoardGestures(dataset)` runs a recorded landmark dataset through
+  the recognizer and counts events (pinch re-derived from the rule
+  classifier with release hysteresis).
+
+`stage.html` still runs its original inline copy of these laws — migrating
+its call sites onto the recognizers is the next slice, so the board's
+behaviour is unchanged by this one. Run the tests with
+`node tests/gesture-engine.test.mjs`.
+
 ## Streaming / recording (advanced)
 
 Two pages, one scene: the tracker page owns your camera; `stage.html?role=render` is a truly transparent mirror of it, built for an OBS browser source: the glass composites over your camera feed with real alpha. `&cursors=0` hides the finger rings (bare-hands sorcery), `&ss=2` renders at 2× for razor-sharp cards, and `?portrait=1` on the tracker flips the whole rig to vertical 9:16 for Shorts and TikTok. `?res=3840x2160` bumps the tracker's capture for a 4K self-view (`1280x720` rescues slow machines); in an OBS rig your broadcast camera is OBS's own source, so tracking happily stays at the default. Details in the sample notes' Field Guide.

@@ -7,3 +7,27 @@ state/mood.json
 state/wave.json
 # your personal config, created at setup: never tracked, never touched by updates
 barehands.json
+
+# local datasets, models and python venv (see DATA-SOURCES.md)
+data/
+.venv/
+
+# github-publisher standard ignores
+node_modules/
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+*.db
+*.sqlite
+*.sqlite3
+*.log
+*.pem
+*.key
+__pycache__/
+.venv/
+venv/
+*.zip
+*.tar.gz
+.DS_Store

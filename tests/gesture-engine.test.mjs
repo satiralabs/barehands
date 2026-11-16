@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import {
-  AdaptivePointFilter, DEFAULT_PROFILE, DynamicPinchGate, MultiCameraFusion,
-  StableHandTracker, TemporalGate, deriveProfile, replayDataset
+  AdaptivePointFilter, BoardGestureRecognizer, ClapRecognizer,
+  DEFAULT_PROFILE, DynamicPinchGate, ForcePullRecognizer, MultiCameraFusion,
+  RotateSession, StableHandTracker, TemporalGate, TwoHandScale,
+  classifyRuleBased, clawAimRay,
+  deriveProfile, loadGestureProfile, replayBoardGestures, replayDataset
 } from "../gesture-engine.mjs";
 
 const hand = (x, label = "Left") => ({
@@ -79,5 +82,333 @@ const fused = fusion.fuse([
 assert.equal(fused.length, 1);
 assert.equal(fused[0].sourceCameraCount, 2);
 assert.equal(fused[0].handedness, "Right");
+
+// ---------------------------------------------------------------------
+// Board gestures (Progression 1) — laws lifted from stage.html
+// ---------------------------------------------------------------------
+const feed = (rec, frames) => frames.flatMap(f => rec.update(f));
+const frame = (x, y, pinched, nowMs, extra = {}) =>
+  ({ x, y, pinched, nowMs, holding: false, scrubAvailable: false,
+     muted: false, ...extra });
+const types = evts => evts.map(e => e.type);
+
+// Profile additions are present and sanitized
+assert.equal(DEFAULT_PROFILE.tapMaxMs, 300);
+assert.equal(DEFAULT_PROFILE.pullStrainMs, 2000);
+const clampedProfile = loadGestureProfile({ getItem: () =>
+  JSON.stringify({ version: 1, tapMaxMs: 99999 }) });
+assert.equal(clampedProfile.tapMaxMs, 800);
+
+// TAP: quick, near-still release fires; moved / long / muted do not
+{
+  const rec = new BoardGestureRecognizer(DEFAULT_PROFILE);
+  const evts = feed(rec, [
+    frame(0.5, 0.5, false, 0), frame(0.5, 0.5, false, 33),
+    frame(0.5, 0.5, true, 66), frame(0.5, 0.5, true, 99),
+    frame(0.5, 0.5, true, 132), frame(0.5, 0.5, false, 165)
+  ]);
+  assert(types(evts).includes("pinchstart"));
+  assert(types(evts).includes("tap"));
+}
+{
+  const rec = new BoardGestureRecognizer(DEFAULT_PROFILE);
+  const evts = feed(rec, [
+    frame(0.5, 0.5, false, 0), frame(0.5, 0.5, true, 33),
+    frame(0.56, 0.5, true, 66), frame(0.56, 0.5, false, 99)
+  ]);
+  assert(!types(evts).includes("tap"));   // travelled too far
+}
+{
+  const rec = new BoardGestureRecognizer(DEFAULT_PROFILE);
+  const frames = [frame(0.5, 0.5, false, 0), frame(0.5, 0.5, true, 33)];
+  for (let t = 66; t <= 495; t += 33) frames.push(frame(0.5, 0.5, true, t));
+  frames.push(frame(0.5, 0.5, false, 528));
+  assert(!types(feed(rec, frames)).includes("tap"));   // held too long
+}
+{
+  const rec = new BoardGestureRecognizer(DEFAULT_PROFILE);
+  const evts = feed(rec, [
+    frame(0.5, 0.5, false, 0), frame(0.5, 0.5, true, 33),
+    frame(0.5, 0.5, false, 66, { muted: true })
+  ]);
+  assert(!types(evts).includes("tap"));   // probation kill mutes the tap
+}
+
+// DRAG + gentle placement: drag lifecycle, no throw
+{
+  const rec = new BoardGestureRecognizer(DEFAULT_PROFILE);
+  const frames = [frame(0.4, 0.5, false, 0, { holding: true }),
+                  frame(0.4, 0.5, true, 33, { holding: true })];
+  for (let k = 1; k <= 10; k++)
+    frames.push(frame(0.4 + k * 0.01, 0.5, true, 33 + k * 33,
+      { holding: true }));
+  for (let k = 0; k < 10; k++)   // parked before release: follow-through dies
+    frames.push(frame(0.5, 0.5, true, 400 + k * 33, { holding: true }));
+  frames.push(frame(0.5, 0.5, false, 760, { holding: true }));
+  const evts = feed(rec, frames);
+  assert(types(evts).includes("dragstart"));
+  assert(types(evts).includes("drag"));
+  assert(types(evts).includes("dragend"));
+  assert(!types(evts).includes("throw"));
+}
+
+// THROW: fast release with follow-through fires with the peak velocity
+{
+  const rec = new BoardGestureRecognizer(DEFAULT_PROFILE);
+  const frames = [frame(0.3, 0.5, false, 0, { holding: true }),
+                  frame(0.3, 0.5, false, 33, { holding: true }),
+                  frame(0.3, 0.5, true, 66, { holding: true })];
+  for (let k = 1; k <= 5; k++)
+    frames.push(frame(0.3 + k * 0.06, 0.5, true, 66 + k * 33,
+      { holding: true }));
+  frames.push(frame(0.66, 0.5, false, 264, { holding: true }));
+  const evts = feed(rec, frames);
+  const thr = evts.find(e => e.type === "throw");
+  assert(thr && thr.vx > 0 && thr.peak > DEFAULT_PROFILE.throwViewportPerSec);
+}
+// THROW guards: sub-120ms grip and post-stretch releases never fling
+{
+  const rec = new BoardGestureRecognizer(DEFAULT_PROFILE);
+  const evts = feed(rec, [
+    frame(0.3, 0.5, false, 0, { holding: true }),
+    frame(0.3, 0.5, true, 33, { holding: true }),
+    frame(0.42, 0.5, true, 66, { holding: true }),
+    frame(0.54, 0.5, false, 99, { holding: true })
+  ]);
+  assert(!types(evts).includes("throw"));
+}
+{
+  const rec = new BoardGestureRecognizer(DEFAULT_PROFILE);
+  const frames = [frame(0.3, 0.5, false, 0, { holding: true }),
+                  frame(0.3, 0.5, true, 33, { holding: true })];
+  for (let k = 1; k <= 5; k++)
+    frames.push(frame(0.3 + k * 0.06, 0.5, true, 33 + k * 33,
+      { holding: true }));
+  rec.noteStretch(200);
+  frames.push(frame(0.66, 0.5, false, 231, { holding: true }));
+  assert(!types(feed(rec, frames)).includes("throw"));
+}
+
+// GHOST: a pinch born at wave speed cannot grab, then self-heals
+{
+  const rec = new BoardGestureRecognizer(DEFAULT_PROFILE);
+  const frames = [];
+  for (let k = 0; k <= 3; k++)
+    frames.push(frame(0.2 + k * 0.05, 0.5, false, k * 33));
+  frames.push(frame(0.4, 0.5, true, 132));
+  for (let t = 165; t <= 792; t += 33)
+    frames.push(frame(0.4, 0.5, true, t));
+  frames.push(frame(0.4, 0.5, false, 825));
+  const evts = feed(rec, frames);
+  assert(types(evts).includes("ghostpinch"));
+  const start = evts.find(e => e.type === "pinchstart");
+  assert(start && start.recovered === true);
+}
+
+// HOLD: ~1s roughly still promotes; drift re-anchors the timer
+{
+  const rec = new BoardGestureRecognizer(DEFAULT_PROFILE);
+  const frames = [frame(0.5, 0.5, false, 0, { holding: true }),
+                  frame(0.5, 0.5, true, 33, { holding: true })];
+  for (let t = 66; t <= 1200; t += 33)
+    frames.push(frame(0.5, 0.5, true, t, { holding: true }));
+  const evts = feed(rec, frames);
+  assert.equal(evts.filter(e => e.type === "hold").length, 1);
+  assert(types(evts).includes("holdprogress"));
+}
+{
+  const rec = new BoardGestureRecognizer(DEFAULT_PROFILE);
+  const frames = [frame(0.5, 0.5, false, 0, { holding: true }),
+                  frame(0.5, 0.5, true, 33, { holding: true })];
+  for (let t = 66; t <= 528; t += 33)
+    frames.push(frame(0.5, 0.5, true, t, { holding: true }));
+  frames.push(frame(0.56, 0.5, true, 561, { holding: true }));  // drift
+  for (let t = 594; t <= 1100; t += 33)
+    frames.push(frame(0.56, 0.5, true, t, { holding: true }));
+  assert(!types(feed(rec, frames)).includes("hold"));
+}
+
+// SCRUB: empty pinch engages after deliberate travel, mirrored delta
+{
+  const rec = new BoardGestureRecognizer(DEFAULT_PROFILE);
+  const evts = feed(rec, [
+    frame(0.5, 0.5, false, 0),
+    frame(0.5, 0.5, true, 33, { scrubAvailable: true }),
+    frame(0.53, 0.5, true, 66, { scrubAvailable: true }),
+    frame(0.64, 0.5, true, 99, { scrubAvailable: true }),
+    frame(0.64, 0.5, false, 132, { scrubAvailable: true })
+  ]);
+  assert(types(evts).includes("scrubstart"));
+  assert(types(evts).includes("scrubend"));
+  const scrub = evts.filter(e => e.type === "scrub").pop();
+  assert(Math.abs(scrub.delta - (-(0.64 - 0.53) / 0.28)) < 1e-9);
+}
+
+// SCALE: two-hand stretch is scale-only, clamped, with a carry midpoint
+{
+  const scale = new TwoHandScale(DEFAULT_PROFILE);
+  scale.start({ x: 0.4, y: 0.5 }, { x: 0.6, y: 0.5 }, 1);
+  const out = scale.update({ x: 0.3, y: 0.5 }, { x: 0.7, y: 0.5 });
+  assert(Math.abs(out.scale - 2) < 1e-9);
+  assert.deepEqual(out.mid, { x: 0.5, y: 0.5 });
+  const huge = scale.update({ x: 0, y: 0.5 }, { x: 1, y: 0.5 });
+  assert(Math.abs(huge.scale - 5) < 1e-9);
+  const tiny = scale.update({ x: 0.49, y: 0.5 }, { x: 0.51, y: 0.5 });
+  assert.equal(tiny.scale, DEFAULT_PROFILE.scaleMin);
+}
+
+// ROTATE: the hold latch turns hand travel into clamped yaw/pitch
+{
+  const rot = new RotateSession(DEFAULT_PROFILE);
+  rot.start(0.5, 0.5, { rx: 0, ry: 0 });
+  const mid = rot.update(0.55, 0.55);
+  assert(Math.abs(mid.ry - 0.6) < 1e-9 && Math.abs(mid.rx - 0.6) < 1e-9);
+  const max = rot.update(0.9, 0.5);
+  assert.equal(max.ry, DEFAULT_PROFILE.rotateClampRad);
+}
+
+// CLAP: the prayer law — apart, then palms together, fingers up, open
+const clapHand = (wx, overrides = {}) => ({
+  wrist: { x: wx, y: 0.5 }, mcp: { x: wx, y: 0.35 },
+  handUp: 1, softOpen: true, lastSoftT: 0, pinched: false,
+  lastPinchT: -10000, ...overrides   // long ago: the 800ms blackout is real
+});
+{
+  const rec = new ClapRecognizer(DEFAULT_PROFILE);
+  assert.deepEqual(rec.update(
+    [clapHand(0.30, { lastSoftT: 0 }), clapHand(0.52, { lastSoftT: 0 })], 0), []);
+  const fired = rec.update(
+    [clapHand(0.44, { lastSoftT: 100 }), clapHand(0.50, { lastSoftT: 100 })],
+    100);
+  assert.equal(fired.length, 1);
+  assert.equal(fired[0].type, "clap");
+}
+{
+  const rec = new ClapRecognizer(DEFAULT_PROFILE);   // recent pinch kills it
+  rec.update([clapHand(0.30), clapHand(0.52)], 0);
+  const out = rec.update(
+    [clapHand(0.44, { lastPinchT: 50 }), clapHand(0.50)], 100);
+  assert.deepEqual(out, []);
+}
+{
+  const rec = new ClapRecognizer(DEFAULT_PROFILE);   // fingers not up
+  rec.update([clapHand(0.30), clapHand(0.52)], 0);
+  const out = rec.update(
+    [clapHand(0.44, { handUp: 0.2 }), clapHand(0.50, { handUp: 0.2 })], 100);
+  assert.deepEqual(out, []);
+}
+{
+  const rec = new ClapRecognizer(DEFAULT_PROFILE);   // the vanish read
+  rec.update([clapHand(0.30, { lastSoftT: 0 }), clapHand(0.52, { lastSoftT: 0 })], 0);
+  rec.update([clapHand(0.40, { lastSoftT: 100 }), clapHand(0.54, { lastSoftT: 100 })], 100);
+  const out = rec.update([], 200);
+  assert.equal(out.length, 1);
+}
+
+// FORCE PULL: arm needs the open flash; snap after the strain = pull
+const pullFrames = (rec, { snapAt, lastOpenT = 0 }) => {
+  const all = [];
+  const target = [{ id: "t1", x: 0.8, y: 0.52 }];
+  for (let t = 0; t <= snapAt; t += 100) {
+    const snapFrame = t === snapAt;
+    const out = rec.update({
+      claw: !snapFrame, ratio: snapFrame ? 0.3 : 0.9, nowMs: t,
+      lastOpenT, holding: false, overTarget: false,
+      targets: target, origin: { x: 0.5, y: 0.5 }, dir: { x: 1, y: 0 }
+    });
+    all.push(...out.events);
+  }
+  return all;
+};
+{
+  const rec = new ForcePullRecognizer(DEFAULT_PROFILE);
+  const evts = pullFrames(rec, { snapAt: 2700 });
+  const tt = types(evts);
+  assert(tt.includes("pullarm"));
+  assert(tt.includes("pulltarget"));
+  assert(tt.includes("pullready"));
+  const pull = evts.find(e => e.type === "pull");
+  assert(pull && pull.targetId === "t1");
+}
+{
+  const rec = new ForcePullRecognizer(DEFAULT_PROFILE);   // early snap
+  const evts = pullFrames(rec, { snapAt: 1000 });
+  assert(types(evts).includes("pullmisfire"));
+  assert(!types(evts).includes("pull"));
+}
+{
+  const rec = new ForcePullRecognizer(DEFAULT_PROFILE);   // no open flash
+  const evts = pullFrames(rec, { snapAt: 1500, lastOpenT: -5000 });
+  assert(!types(evts).includes("pullarm"));
+  assert(types(evts).includes("pullwarn"));
+}
+// Aim ray: perpendicular to the thumb–index line, away from the palm
+{
+  const ray = clawAimRay(
+    { x: 0.4, y: 0.6 }, { x: 0.6, y: 0.6 },
+    { x: 0.5, y: 0.75 }, { x: 0.5, y: 0.6 });
+  assert(Math.abs(ray.dir.x) < 1e-9 && ray.dir.y === -1);
+}
+
+// REPLAY: a recorded tap is recovered from a landmark dataset
+{
+  const lm = () => Array.from({ length: 21 },
+    () => ({ x: 0.5, y: 0.5, z: 0 }));
+  const pinchF = { ratio: 0.2, contrast: 0.4, backMean: 1.6, f8: 1.2,
+    f12: 1.6, f16: 1.6, f20: 1.6, thumbOffset: 0.5, aspect: 3,
+    c8: 0, c12: 0, c16: 0, c20: 0, spread: 0.3, handUp: 0, quality: 0.9 };
+  const openF = { ...pinchF, ratio: 0.9, contrast: 0 };
+  const dataset = { schema: "barehands-landmarks/v1", frames: [
+    { t: 0, label: "relaxed", handedness: "Right",
+      landmarks: lm(), features: openF },
+    { t: 33, label: "pinch", handedness: "Right",
+      landmarks: lm(), features: pinchF },
+    { t: 66, label: "pinch", handedness: "Right",
+      landmarks: lm(), features: pinchF },
+    { t: 99, label: "relaxed", handedness: "Right",
+      landmarks: lm(), features: openF }
+  ] };
+  const { counts } = replayBoardGestures(dataset, DEFAULT_PROFILE);
+  assert.equal(counts.tap, 1);
+  assert.throws(() => replayBoardGestures({ schema: "wrong", frames: [] }));
+}
+
+// ---------------------------------------------------------------------
+// Static poses (HaGRID-fitted) — synthetic features at the fitted
+// medians; dataset-level accuracy lives in tools/evaluate_poses.mjs
+// ---------------------------------------------------------------------
+{
+  const base = { ratio: 1.2, f8: 0.8, f12: 0.8, f16: 0.8, f20: 0.8,
+    f4: 1.2, backMean: 0.8, contrast: 0, thumbOffset: 0.5, aspect: 3,
+    c8: 0, c12: 0, c16: 0, c20: 0, spread: 0.3, handUp: 1,
+    quality: 0.9, thumbHeight: 0 };
+  const pose = over => classifyRuleBased({ ...base, ...over },
+    DEFAULT_PROFILE);
+  assert.equal(DEFAULT_PROFILE.extArch, 1.3);
+  const fist = pose({});
+  assert(fist.fist && fist.fingerCount === 0 && !fist.thumbsUp);
+  const point = pose({ f8: 1.9 });
+  assert(point.point && point.fingerCount === 1 && !point.victory);
+  const victory = pose({ f8: 1.9, f12: 1.95 });
+  assert(victory.victory && victory.fingerCount === 2);
+  const rock = pose({ f8: 1.9, f20: 1.85 });
+  assert(rock.rock && rock.fingerCount === 2 && !rock.victory);
+  const little = pose({ f20: 1.85 });
+  assert(little.littleFinger && little.fingerCount === 1);
+  const call = pose({ f20: 1.95, f4: 1.7 });
+  assert(call.call && call.littleFinger);   // poses overlap by design
+  const up = pose({ f4: 1.7, thumbHeight: 1.05 });
+  assert(up.thumbsUp && !up.fist && !up.thumbsDown);
+  const down = pose({ f4: 1.75, thumbHeight: -1.05 });
+  assert(down.thumbsDown && !down.thumbsUp);
+  const three = pose({ f8: 1.9, f12: 1.95, f16: 1.9 });
+  assert(three.fingerCount === 3 && !three.victory && !three.point);
+  const five = pose({ f8: 1.9, f12: 1.95, f16: 1.9, f20: 1.85, f4: 1.7 });
+  assert.equal(five.fingerCount, 5);
+  // Features from before f4/thumbHeight existed: no thumb poses, no crash
+  const legacy = { ...base }; delete legacy.f4; delete legacy.thumbHeight;
+  const old = classifyRuleBased(legacy, DEFAULT_PROFILE);
+  assert(!old.thumbsUp && !old.thumbsDown && old.fist);
+}
 
 console.log("gesture engine tests passed");
