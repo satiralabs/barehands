@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Barehands (New Engine)
+GenericName=Gesture Board
+Comment=Move things on screen with your bare hands - new engine build
+Exec=barehands-new
+Icon=barehands-new
+Terminal=false
+Categories=Utility;Accessibility;
+Keywords=gesture;camera;hands;board;
+StartupNotify=false

@@ -1,0 +1,42 @@
+# Barehands (new engine) - Arch package.
+# The payload installs read-only under /usr/share/barehands-new; the
+# /usr/bin/barehands-new launcher syncs it to ~/.local/share on first
+# run because the app keeps its config and board state next to
+# server.py. Build with:  makepkg -f   (the source tarball is the
+# Linux release tarball from the same dist folder).
+pkgname=barehands-new
+pkgver=1.1.0
+pkgrel=2
+pkgdesc="Barehands gesture board - new engine build (board recognizers, HaGRID pose set, shadow model)"
+arch=('any')
+url="https://github.com/satiralabs/barehands"
+license=('AGPL-3.0-or-later')
+depends=('python')
+source=("barehands-new-${pkgver}-linux.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+  install -dm755 "$pkgdir/usr/share/$pkgname"
+  cp -a "$srcdir/barehands-new/." "$pkgdir/usr/share/$pkgname/"
+  # Personal config and runtime state never belong in a package.
+  rm -f "$pkgdir/usr/share/$pkgname/barehands.json"
+  rm -f "$pkgdir/usr/share/$pkgname/server.log"
+  rm -rf "$pkgdir/usr/share/$pkgname/.git"
+  # The payload must be world-readable or the per-user launcher
+  # cannot sync it out of /usr/share on first run.
+  find "$pkgdir/usr/share/$pkgname" -type d -exec chmod 755 {} +
+  find "$pkgdir/usr/share/$pkgname" -type f -exec chmod 644 {} +
+  find "$pkgdir/usr/share/$pkgname" -name "*.sh" -exec chmod 755 {} +
+  chmod 755 "$pkgdir/usr/share/$pkgname/packaging/linux/barehands-new"
+
+  install -Dm755 "$srcdir/barehands-new/packaging/linux/barehands-new" \
+    "$pkgdir/usr/bin/barehands-new"
+  install -Dm644 "$srcdir/barehands-new/packaging/linux/barehands-new.desktop" \
+    "$pkgdir/usr/share/applications/barehands-new.desktop"
+  install -Dm644 "$srcdir/barehands-new/packaging/icon-512.png" \
+    "$pkgdir/usr/share/icons/hicolor/512x512/apps/barehands-new.png"
+  install -Dm644 "$srcdir/barehands-new/packaging/icon-256.png" \
+    "$pkgdir/usr/share/icons/hicolor/256x256/apps/barehands-new.png"
+  install -Dm644 "$srcdir/barehands-new/LICENSE" \
+    "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

@@ -1,0 +1,98 @@
+#!/bin/sh
+# Barehands (new engine) launcher.
+#
+# The app needs a writable home (config + board state live next to
+# server.py), so the runnable copy lives in ~/.local/share/barehands-new.
+# A system package installs the payload read-only in
+# /usr/share/barehands-new and this launcher syncs it on first run.
+# The plain tarball install puts the payload in the runtime dir
+# directly, and the sync step is then a no-op.
+#
+# Usage:
+#   barehands-new            start (if needed) and open the board
+#   barehands-new --lab      start and open the Gesture Lab
+#   barehands-new --no-open  start only, do not open a browser
+#   barehands-new --status   say whether the server is answering
+#   barehands-new --stop     stop the server started from the runtime dir
+#   barehands-new --resync   refresh code from the payload, keeping
+#                            barehands.json and state/
+set -eu
+
+APP="barehands-new"
+PORT="8794"
+RUNTIME="$HOME/.local/share/$APP"
+PAYLOAD="${BAREHANDS_PAYLOAD:-/usr/share/$APP}"
+[ -d "$PAYLOAD" ] || PAYLOAD="$RUNTIME"
+URL_PATH="stage.html"
+
+port_up() {
+  python3 - "$PORT" <<'PY' 2>/dev/null
+import socket, sys
+s = socket.socket()
+try:
+    sys.exit(0 if s.connect_ex(("127.0.0.1", int(sys.argv[1]))) == 0 else 1)
+finally:
+    s.close()
+PY
+}
+
+sync_payload() {
+  # $1 = force (1) or first-run only (0)
+  if [ "$PAYLOAD" = "$RUNTIME" ]; then return 0; fi
+  if [ -f "$RUNTIME/server.py" ] && [ "${1:-0}" != "1" ]; then return 0; fi
+  mkdir -p "$RUNTIME"
+  # Preserve the user's config and board state across a resync.
+  tmp_keep="$(mktemp -d)"
+  [ -f "$RUNTIME/barehands.json" ] && cp "$RUNTIME/barehands.json" "$tmp_keep/"
+  [ -d "$RUNTIME/state" ] && cp -a "$RUNTIME/state" "$tmp_keep/"
+  cp -a "$PAYLOAD/." "$RUNTIME/"
+  [ -f "$tmp_keep/barehands.json" ] && cp "$tmp_keep/barehands.json" "$RUNTIME/"
+  [ -d "$tmp_keep/state" ] && cp -a "$tmp_keep/state/." "$RUNTIME/state/" 2>/dev/null || true
+  rm -rf "$tmp_keep"
+  # First run on a machine that already has a barehands setup: borrow
+  # its config so the board keeps the user's name and orbs.
+  if [ ! -f "$RUNTIME/barehands.json" ]; then
+    for old in "$HOME/projects/barehands-new/barehands.json" \
+               "$HOME/projects/barehands/barehands.json"; do
+      if [ -f "$old" ]; then cp "$old" "$RUNTIME/barehands.json"; break; fi
+    done
+  fi
+}
+
+start_server() {
+  sync_payload 0
+  if port_up; then return 0; fi
+  ( cd "$RUNTIME" && nohup python3 server.py >> "$RUNTIME/server.log" 2>&1 & )
+  i=0
+  while [ $i -lt 30 ]; do
+    if port_up; then return 0; fi
+    i=$((i + 1)); sleep 0.2
+  done
+  echo "barehands-new: server did not open port $PORT; see $RUNTIME/server.log" >&2
+  return 1
+}
+
+case "${1:-}" in
+  --lab) URL_PATH="gesture-lab.html" ;;
+  --status)
+    if port_up; then echo "barehands-new is running on port $PORT"; else echo "barehands-new is not running"; fi
+    exit 0 ;;
+  --stop)
+    pkill -f "$RUNTIME/server.py" 2>/dev/null || true
+    echo "barehands-new stopped"
+    exit 0 ;;
+  --resync)
+    sync_payload 1
+    echo "barehands-new code refreshed from $PAYLOAD (config and state kept)"
+    exit 0 ;;
+esac
+
+start_server
+
+if [ "${1:-}" != "--no-open" ]; then
+  url="http://127.0.0.1:$PORT/$URL_PATH"
+  if command -v xdg-open >/dev/null 2>&1; then xdg-open "$url" >/dev/null 2>&1 &
+  elif command -v open >/dev/null 2>&1; then open "$url" &
+  else echo "Open $url in your browser"; fi
+fi
+echo "barehands-new: http://127.0.0.1:$PORT/$URL_PATH"

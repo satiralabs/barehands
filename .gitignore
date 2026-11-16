@@ -12,6 +12,10 @@ barehands.json
 data/
 .venv/
 
+# installer build output
+build/
+dist/
+
 # github-publisher standard ignores
 node_modules/
 .env
