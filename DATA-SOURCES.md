@@ -31,6 +31,18 @@ development and evaluation. Re-fetch with `tools/fetch_assets.sh`.
 - **HaGRID / HaGRIDv2** (github.com/hukenovs/hagrid) — the dataset
   paper's class list defines the 34 ground-truth classes used here.
 
+## Verification of the Google model (2026-11-16)
+
+`tools/test_google_model.py` ran `gesture_recognizer.task` locally
+(venv mediapipe 1.2.3; on this VM the C bindings need GL libraries —
+extracted from Ubuntu glvnd .debs into /tmp and used via
+`LD_LIBRARY_PATH`, no system install) against 30 HaGRID photos per
+class: Open_Palm 97% (palm), Closed_Fist 85%, Thumb_Down 88%,
+Victory 87%, Thumb_Up 81%, Pointing_Up 79%, stop→Open_Palm 76%,
+ILoveYou 4% — Google's ILoveYou includes the thumb, HaGRID's rock
+does not; a definition difference, not a model failure. The model
+also found no hand at all in 27/240 photos.
+
 ## Checked but not used
 
 - `Vincent-luo/hagrid-mediapipe-hands` and `MakiPan/Hagrid-mediapipe-hand-enc`

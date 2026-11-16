@@ -18,6 +18,13 @@
 // at all, vendor vision_bundle.mjs next to this file and pass
 // visionUrl accordingly.
 
+// Measured locally against HaGRID photos (tools/test_google_model.py,
+// 30 photos/class): Open_Palm 97%, Closed_Fist 85%, Thumb_Down 88%,
+// Victory 87%, Thumb_Up 81%, Pointing_Up 79% agreement. ILoveYou is
+// the exception: Google's class includes the thumb, HaGRID's rock
+// does not, so the model almost never fires it for rock photos (1/28)
+// — treat a bridge "rock" as rock-with-thumb, and expect the rules
+// and the model to disagree there by design.
 export const MODEL_GESTURE_TO_POSE = Object.freeze({
   Open_Palm: "open",
   Closed_Fist: "fist",

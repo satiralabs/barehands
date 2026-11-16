@@ -106,6 +106,32 @@ its call sites onto the recognizers is the next slice, so the board's
 behaviour is unchanged by this one. Run the tests with
 `node tests/gesture-engine.test.mjs`.
 
+### Poses, a real dataset, and a pretrained shadow model
+
+The rule classifier now also reads static poses from per-finger
+extension (arch ratios, fitted on real photos): `fist`, `point`,
+`victory`, `rock`, `littleFinger`, `call`, `thumbsUp`, `thumbsDown`,
+and a `fingerCount` (0-5). Fitting and evaluation used **HaGRID**
+(CC BY-SA 4.0) — 15,855 real hands with MediaPipe skeletons,
+downloaded account-free from Hugging Face mirrors; everything lives
+under `data/` (gitignored) and is re-fetchable with
+`tools/fetch_assets.sh`. Provenance and licenses: `DATA-SOURCES.md`.
+
+Measured on those 15,855 hands (`tools/evaluate_poses.mjs`): pose
+recall 74-89%, false-fire under 3.5% except `point`/`victory`, whose
+extra hits are HaGRID classes with identical finger shapes (mute,
+thumb_index, three2). The dependency-free trainer
+(`tools/train_gesture_classifier.py`) now trains the pose labels too:
+on a stratified held-out split it scores **89.3% top-1 across 10
+classes** (`tools/evaluate_classifier.py`). The split is by sample,
+not by user — the export has no user ids — so the model file stays
+`productionReady: false` until it is validated on held-out users.
+
+Google's pretrained Gesture Recognizer (Apache-2.0, ~8 MB) is wired
+as an optional **shadow** layer in `gesture-recognizer-bridge.mjs`:
+it cross-checks the rule poses live and reports disagreements, but
+never drives the board.
+
 ## Streaming / recording (advanced)
 
 Two pages, one scene: the tracker page owns your camera; `stage.html?role=render` is a truly transparent mirror of it, built for an OBS browser source: the glass composites over your camera feed with real alpha. `&cursors=0` hides the finger rings (bare-hands sorcery), `&ss=2` renders at 2× for razor-sharp cards, and `?portrait=1` on the tracker flips the whole rig to vertical 9:16 for Shorts and TikTok. `?res=3840x2160` bumps the tracker's capture for a 4K self-view (`1280x720` rescues slow machines); in an OBS rig your broadcast camera is OBS's own source, so tracking happily stays at the default. Details in the sample notes' Field Guide.
