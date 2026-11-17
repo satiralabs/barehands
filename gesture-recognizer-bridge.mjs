@@ -1,4 +1,4 @@
-// Optional bridge to Google's MediaPipe Gesture Recognizer — a
+// Optional bridge to Google's MediaPipe Gesture Recognizer - a
 // pretrained model (7 static gestures + handedness) that runs fully
 // on-device via Tasks Vision WASM. It is a SHADOW layer: it never
 // drives the board. Its job is to cross-check the engine's rule poses
@@ -10,20 +10,20 @@
 //        tools/fetch_assets.sh        (or fetch_assets.ps1 on Windows)
 //      -> data/models/gesture_recognizer.task  (~8 MB, Apache-2.0)
 //   2. Serve the project with server.py as usual and open the board
-//      or Lab with ?shadow=1 — or call createShadowRecognizer()
+//      or Lab with ?shadow=1 - or call createShadowRecognizer()
 //      from your own page code.
 //
-// The Tasks Vision library itself is loaded from the same CDN the
-// board already uses for the HandLandmarker; to run with no network
-// at all, vendor vision_bundle.mjs next to this file and pass
-// visionUrl accordingly.
+// The Tasks Vision library defaults to the CDN, but callers should
+// pass the local vendored copies (vendor/tasks-vision/) as visionUrl
+// and wasmRoot - the Lab does this - so the shadow layer also works
+// with no network at all.
 
 // Measured locally against HaGRID photos (tools/test_google_model.py,
 // 30 photos/class): Open_Palm 97%, Closed_Fist 85%, Thumb_Down 88%,
 // Victory 87%, Thumb_Up 81%, Pointing_Up 79% agreement. ILoveYou is
 // the exception: Google's class includes the thumb, HaGRID's rock
 // does not, so the model almost never fires it for rock photos (1/28)
-// — treat a bridge "rock" as rock-with-thumb, and expect the rules
+// - treat a bridge "rock" as rock-with-thumb, and expect the rules
 // and the model to disagree there by design.
 export const MODEL_GESTURE_TO_POSE = Object.freeze({
   Open_Palm: "open",
@@ -42,7 +42,7 @@ const DEFAULT_WASM_ROOT =
   "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
 
 // Create a shadow recognizer. Returns null (with a console warning)
-// when the model file is missing or Tasks Vision fails to load —
+// when the model file is missing or Tasks Vision fails to load -
 // the board must never break because the shadow layer is absent.
 // onResult({pose, gesture, score, handedness, disagreements}) fires
 // per recognized frame; disagreements lists engine pose names the

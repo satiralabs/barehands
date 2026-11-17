@@ -16,7 +16,7 @@
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""barehands server — serves the hand-tracked air-board on localhost.
+"""barehands server - serves the hand-tracked air-board on localhost.
 
 localhost = a secure context, which is what lets the browser open your
 camera for the tracker page. Nothing here ever leaves your machine.
@@ -28,8 +28,8 @@ Endpoints:
   GET  /state                  the render page mirrors the scene from here
   POST /cmd                    board commands (your AI -> the board)
   GET  /config                 the barehands.json config (name + orbs)
-  GET  /tree?orb=N             a notes orb's folder tree — read-only, JAILED
-  GET  /note?f=N/<rel>         one note's text — read-only, JAILED
+  GET  /tree?orb=N             a notes orb's folder tree - read-only, JAILED
+  GET  /note?f=N/<rel>         one note's text - read-only, JAILED
   GET  /props                  the media airlock as a browsable tree
   GET  /orb                    your assistant's live state (the ring reads it)
 
@@ -48,7 +48,7 @@ Your AI drives the ring by writing tiny files into ./state/ :
   state/state      one word: idle | listening | thinking | speaking
   state/mood.json  {"mood": "green"|"amber"|"red", "ts": <unix time>}
   state/wave.json  {"samples": [0..1 x 64], "ts": <unix time>}
-Missing files are fine — the ring just idles.
+Missing files are fine - the ring just idles.
 """
 import json
 import subprocess
@@ -194,7 +194,7 @@ class Handler(SimpleHTTPRequestHandler):
                 assert cmd.get("a") in _ALLOWED
                 if cmd["a"] in ("add_img", "hand", "give", "present") and cmd.get("src"):
                     # THE AIRLOCK: only files really inside ./media/ ever
-                    # stage — subfolders allowed, escapes 400. If the
+                    # stage - subfolders allowed, escapes 400. If the
                     # exact path misses, a UNIQUE basename match anywhere
                     # inside the airlock self-heals a wrong-folder guess;
                     # zero or many matches still 400.
@@ -288,7 +288,7 @@ class Handler(SimpleHTTPRequestHandler):
                 self._json({"name": "?", "notes": [], "dirs": []}, 500)
             return
         if self.path == "/props":
-            # the media airlock as a browsable tree — live filesystem
+            # the media airlock as a browsable tree - live filesystem
             # read: drop a file in media/, reopen the orb, it's there
             EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".webm",
                     ".glb", ".gltf"}
@@ -335,7 +335,7 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if self.path == "/orb":
             # the ring's heartbeat: your assistant's live state, read from
-            # tiny files in ./state/. Every read fails soft — no files,
+            # tiny files in ./state/. Every read fails soft - no files,
             # no assistant, no problem: the ring just breathes.
             s_dir = HERE / "state"
             out = {"state": "idle", "mood": "green", "wave": None}
@@ -386,7 +386,7 @@ class Handler(SimpleHTTPRequestHandler):
         if not self.path.startswith("/note?"):
             return super().do_GET()
         # one note's text: f=<orb>/<relpath>, resolved against that orb's
-        # jail. Inside the root, .md only, must exist — anything else 404s.
+        # jail. Inside the root, .md only, must exist - anything else 404s.
         q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         rel = (q.get("f") or [""])[0]
         idx, _, rel = rel.partition("/")

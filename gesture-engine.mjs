@@ -41,7 +41,7 @@ export const DEFAULT_PROFILE = Object.freeze({
   intentLockDurationMs: 140,
   intentLockDeadzone: 0.028,
   multiCamMinQuality: 0.50,
-  // Board gestures (Progression 1) — values lifted from stage.html's
+  // Board gestures (Progression 1) - values lifted from stage.html's
   // field-tuned laws; see the recognizers at the bottom of this file.
   tapMaxMs: 300,
   minGripMs: 120,
@@ -77,7 +77,26 @@ export const DEFAULT_PROFILE = Object.freeze({
   // folded-finger medians ~0.8, extended ~1.9 on real photos.
   extArch: 1.30,
   thumbExtArch: 1.50,         // thumb arch separates weakly: higher bar
-  thumbHeightMin: 0.55        // |thumbHeight| for thumbs up/down
+  thumbHeightMin: 0.55,       // |thumbHeight| for thumbs up/down
+  // Pose smoother: a pose must win poseSmoothVotes of the last
+  // poseSmoothWindow frames, beat the incumbent by 2 votes, and wait
+  // out poseSmoothHoldMs of dwell before the reported pose switches.
+  poseSmoothWindow: 7,
+  poseSmoothVotes: 4,
+  poseSmoothHoldMs: 300,
+  // Depth gates (z-curl features, see extractHandFeatures). Evaluated
+  // on HaGRID 500 (15,855 hands, tools/evaluate_poses.mjs) and NOT
+  // adopted: the best swept values tie recall and shave at most 0.07pp
+  // of false-fire, which is within noise and was fitted on the eval
+  // set itself. Sentinels (-99 / 99) leave the gates open, so the
+  // shipped classifier behaves exactly as before; set a real value to
+  // switch a gate on (fist: mean z-curl of the four fingers must clear
+  // the floor; rock/call/thumbs: the named tip's z-curl must stay
+  // under the ceiling).
+  fistZcMeanMin: -99,
+  rockZc20Max: 99,
+  callZc4Max: 99,
+  thumbsZc4Max: 99
 });
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
@@ -134,6 +153,15 @@ function sanitizeProfile(profile) {
   clean.extArch = clamp(clean.extArch, 1.0, 1.9);
   clean.thumbExtArch = clamp(clean.thumbExtArch, 1.1, 2.2);
   clean.thumbHeightMin = clamp(clean.thumbHeightMin, 0.1, 1.5);
+  clean.poseSmoothWindow = Math.round(clamp(clean.poseSmoothWindow, 3, 15));
+  clean.poseSmoothVotes = Math.min(
+    Math.round(clamp(clean.poseSmoothVotes, 2, 15)),
+    clean.poseSmoothWindow);
+  clean.poseSmoothHoldMs = clamp(clean.poseSmoothHoldMs, 0, 1000);
+  clean.fistZcMeanMin = clamp(clean.fistZcMeanMin, -99, 1);
+  clean.rockZc20Max = clamp(clean.rockZc20Max, -1, 99);
+  clean.callZc4Max = clamp(clean.callZc4Max, -1, 99);
+  clean.thumbsZc4Max = clamp(clean.thumbsZc4Max, -1, 99);
   clean.scrubMirror = clean.scrubMirror < 0 ? -1 : 1;
   return clean;
 }
@@ -256,8 +284,22 @@ function handednessName(entry) {
 }
 
 export class StableHandTracker {
-  constructor({ graceMs = DEFAULT_PROFILE.dropoutGraceMs } = {}) {
+  constructor({
+    graceMs = DEFAULT_PROFILE.dropoutGraceMs,
+    // Occlusion hold: a frame whose landmarks jump far AND whose
+    // quality fell hard against the last good frame is treated as a
+    // partial occlusion (hand behind an object, tracking glitch),
+    // not a teleport. The last good landmarks are re-emitted with
+    // held: true for at most occlusionHoldMs; after that the new frame
+    // is accepted as a real move.
+    occlusionJump = 0.06,
+    occlusionQualityDrop = 0.25,
+    occlusionHoldMs = 500
+  } = {}) {
     this.graceMs = graceMs;
+    this.occlusionJump = occlusionJump;
+    this.occlusionQualityDrop = occlusionQualityDrop;
+    this.occlusionHoldMs = occlusionHoldMs;
     this.nextId = 1;
     this.tracks = new Map();
   }
@@ -299,16 +341,52 @@ export class StableHandTracker {
             y: (wrist.y - previous.wrist.y) / elapsed
           }
         : { x: 0, y: 0 };
-      this.tracks.set(bestId, {
-        id: bestId,
-        wrist: { x: wrist.x, y: wrist.y },
-        velocity,
-        handedness: hand,
-        lastSeen: nowMs,
-        landmarks: detection.landmarks
-      });
-      unmatched.delete(bestId);
-      result.push({ ...detection, id: bestId, handedness: hand });
+      // Occlusion check (existing track only): a sudden large landmark
+      // jump combined with a hard quality drop is held, not emitted.
+      let held = false;
+      if (previous && previous.landmarks) {
+        const meanJump = detection.landmarks.reduce((sum, point, i) =>
+          sum + dist3(point, previous.landmarks[i]), 0) /
+          detection.landmarks.length;
+        const quality = assessLandmarkQuality(
+          detection.landmarks, previous.landmarks);
+        const occluded = meanJump > this.occlusionJump &&
+          (previous.quality ?? 1) - quality >= this.occlusionQualityDrop;
+        if (occluded) {
+          if (!previous.occludedSince) previous.occludedSince = nowMs;
+          if (nowMs - previous.occludedSince <= this.occlusionHoldMs) {
+            held = true;
+            previous.lastSeen = nowMs;
+            unmatched.delete(bestId);
+            result.push({
+              ...detection, id: bestId, handedness: hand,
+              landmarks: previous.landmarks, held: true, occluded: true
+            });
+          } else {
+            previous.occludedSince = 0;
+          }
+        } else {
+          previous.occludedSince = 0;
+        }
+        if (!held) previous.quality = quality;
+      }
+      if (!held) {
+        const quality = previous?.quality ??
+          assessLandmarkQuality(detection.landmarks);
+        this.tracks.set(bestId, {
+          id: bestId,
+          wrist: { x: wrist.x, y: wrist.y },
+          velocity,
+          handedness: hand,
+          lastSeen: nowMs,
+          landmarks: detection.landmarks,
+          quality,
+          occludedSince: previous?.occludedSince || 0
+        });
+        unmatched.delete(bestId);
+        result.push({ ...detection, id: bestId, handedness: hand,
+                      held: false, occluded: false });
+      }
     }
 
     for (const [id, track] of this.tracks)
@@ -364,12 +442,20 @@ export function assessLandmarkQuality(landmarks, previous = null) {
   return clamp(score, 0, 1);
 }
 
+// Depth curl: how far a fingertip sits in z from its pip joint, in
+// span units. Negative = tip toward the camera relative to its pip.
+// A folded fingertip tucks back toward the palm plane, so its z-curl
+// sits higher than an extended fingertip pointing at the camera.
+const zCurl = (landmarks, tip, pip, span) =>
+  (((landmarks[tip].z || 0) - (landmarks[pip].z || 0)) / span);
+
 export function extractHandFeatures(landmarks, previous = null) {
   // Shape thresholds in stage.html were fitted in image-space. Keep the
   // shared feature math in that same space; curls alone use z because their
   // angular fold test was explicitly fitted in 3D.
   const span = dist2(landmarks[0], landmarks[9]) || 1;
   const palmWidth = dist2(landmarks[5], landmarks[17]) || 1;
+  const palmZ = [0, 5, 9, 13, 17].map(i => landmarks[i].z || 0);
   const f8 = fingerArch(landmarks, 8, 5);
   const f12 = fingerArch(landmarks, 12, 9);
   const f16 = fingerArch(landmarks, 16, 13);
@@ -397,7 +483,18 @@ export function extractHandFeatures(landmarks, previous = null) {
     // height above the wrist, in span units (image space: positive
     // means the tip sits higher than the wrist).
     f4: fingerArch(landmarks, 4, 2),
-    thumbHeight: (landmarks[0].y - landmarks[4].y) / span
+    thumbHeight: (landmarks[0].y - landmarks[4].y) / span,
+    // Depth features (appended, order-preserving). Evaluated on
+    // HaGRID 500 and NOT wired into the pose thresholds by default:
+    // the swept depth gates tie recall and shave at most 0.07pp of
+    // false-fire (see the profile keys and tools/evaluate_poses.mjs).
+    // They are exported for the trainer and for future refits.
+    zc8: zCurl(landmarks, 8, 6, span),
+    zc12: zCurl(landmarks, 12, 10, span),
+    zc16: zCurl(landmarks, 16, 14, span),
+    zc20: zCurl(landmarks, 20, 18, span),
+    zc4: zCurl(landmarks, 4, 2, span),
+    palmDepth: (Math.max(...palmZ) - Math.min(...palmZ)) / span
   };
 }
 
@@ -426,7 +523,7 @@ export function classifyRuleBased(features, profile = DEFAULT_PROFILE) {
     [features.f8, features.f12, features.f16, features.f20]
       .filter(value => value > 1.35).length >= 3;
   // Static poses from per-finger extension (arch over the profile bar),
-  // fitted on HaGRID stills — see extArch in DEFAULT_PROFILE. Poses are
+  // fitted on HaGRID stills - see extArch in DEFAULT_PROFILE. Poses are
   // independent booleans like pinch/claw/open; combinations are the
   // caller's business. Older feature sets without f4/thumbHeight
   // simply yield no thumb poses.
@@ -439,17 +536,30 @@ export function classifyRuleBased(features, profile = DEFAULT_PROFILE) {
   };
   const fingersFolded = !ext.index && !ext.middle && !ext.ring && !ext.pinky;
   const thumbHeight = features.thumbHeight ?? 0;
+  // Depth gates (off by default: the profile sentinels leave them
+  // open). Feature sets recorded before the z features existed
+  // report zc 0, which passes every gate, so legacy data is safe.
+  const zcMean = ((features.zc8 ?? 0) + (features.zc12 ?? 0) +
+    (features.zc16 ?? 0) + (features.zc20 ?? 0)) / 4;
+  const zc4 = features.zc4 ?? 0;
   const poses = {
-    fist: fingersFolded && !ext.thumb,
+    fist: fingersFolded && !ext.thumb &&
+      zcMean > profile.fistZcMeanMin,
     point: ext.index && !ext.middle && !ext.ring && !ext.pinky,
     victory: ext.index && ext.middle && !ext.ring && !ext.pinky,
-    rock: ext.index && !ext.middle && !ext.ring && ext.pinky,
-    littleFinger: !ext.index && !ext.middle && !ext.ring && ext.pinky,
-    call: ext.thumb && ext.pinky && !ext.index && !ext.middle && !ext.ring,
+    rock: ext.index && !ext.middle && !ext.ring && ext.pinky &&
+      (features.zc20 ?? 0) < profile.rockZc20Max,
+    three: ext.index && ext.middle && ext.ring && !ext.pinky,
+    // littleFinger needs the thumb folded: without that, call (thumb
+    // + pinky) fired littleFinger on 80% of HaGRID call frames.
+    littleFinger: !ext.index && !ext.middle && !ext.ring && ext.pinky &&
+      !ext.thumb,
+    call: ext.thumb && ext.pinky && !ext.index && !ext.middle && !ext.ring &&
+      zc4 < profile.callZc4Max,
     thumbsUp: fingersFolded && ext.thumb &&
-      thumbHeight > profile.thumbHeightMin,
+      thumbHeight > profile.thumbHeightMin && zc4 < profile.thumbsZc4Max,
     thumbsDown: fingersFolded && ext.thumb &&
-      thumbHeight < -profile.thumbHeightMin,
+      thumbHeight < -profile.thumbHeightMin && zc4 < profile.thumbsZc4Max,
     fingerCount: [ext.index, ext.middle, ext.ring, ext.pinky, ext.thumb]
       .filter(Boolean).length
   };
@@ -459,7 +569,8 @@ export function classifyRuleBased(features, profile = DEFAULT_PROFILE) {
 const numericFeatureNames = Object.freeze([
   "ratio", "f8", "f12", "f16", "f20", "backMean", "contrast",
   "thumbOffset", "aspect", "c8", "c12", "c16", "c20", "spread",
-  "handUp", "quality", "f4", "thumbHeight"
+  "handUp", "quality", "f4", "thumbHeight",
+  "zc8", "zc12", "zc16", "zc20", "zc4", "palmDepth"
 ]);
 
 export function featureVector(features) {
@@ -468,6 +579,70 @@ export function featureVector(features) {
 
 export function featureNames() {
   return [...numericFeatureNames];
+}
+
+// ---------------------------------------------------------------------
+// Pose smoother - the per-frame classifier flickers (one noisy frame
+// flips point to victory and back). This wraps a stream of pose names
+// (one per hand per frame; null = no pose this frame) and reports a
+// stable pose: a challenger must win poseSmoothVotes of the last
+// poseSmoothWindow frames AND beat the incumbent by 2 votes
+// (hysteresis), and the incumbent must have had poseSmoothHoldMs of
+// dwell before it can be replaced. Call reset() when the hand is lost;
+// a full window of nulls also clears the reported pose.
+// ---------------------------------------------------------------------
+export class PoseSmoother {
+  constructor(profile = DEFAULT_PROFILE) {
+    this.profile = profile;
+    this.window = [];
+    this.current = null;
+    this.currentSince = 0;
+  }
+
+  update(pose, nowMs) {
+    const p = this.profile;
+    this.window.push(pose ?? null);
+    while (this.window.length > p.poseSmoothWindow) this.window.shift();
+    const counts = new Map();
+    for (const name of this.window)
+      if (name) counts.set(name, (counts.get(name) || 0) + 1);
+    let best = null, bestVotes = 0;
+    for (const [name, votes] of counts)
+      if (votes > bestVotes) { best = name; bestVotes = votes; }
+    const incumbentVotes = this.current
+      ? (counts.get(this.current) || 0) : 0;
+    let changed = false;
+    if (best && bestVotes >= p.poseSmoothVotes && best !== this.current) {
+      const beats = incumbentVotes === 0 ||
+        bestVotes >= incumbentVotes + 2;
+      const dwellDone = this.current == null ||
+        nowMs - this.currentSince >= p.poseSmoothHoldMs;
+      if (beats && dwellDone) {
+        this.current = best;
+        this.currentSince = nowMs;
+        changed = true;
+      }
+    } else if (this.current != null && incumbentVotes === 0 &&
+               this.window.length >= p.poseSmoothWindow &&
+               counts.size === 0) {
+      // The hand stopped showing any pose: clear the stale report.
+      this.current = null;
+      this.currentSince = 0;
+      changed = true;
+    }
+    return {
+      pose: this.current,
+      changed,
+      stable: this.current != null &&
+        nowMs - this.currentSince >= p.poseSmoothHoldMs
+    };
+  }
+
+  reset() {
+    this.window = [];
+    this.current = null;
+    this.currentSince = 0;
+  }
 }
 
 function percentile(values, fraction) {
@@ -714,7 +889,7 @@ export class MultiCameraFusion {
 // Board gestures (Progression 1, 2026-11-16)
 //
 // The board's gesture laws used to live only inside stage.html, interleaved
-// with DOM, audio and item management — unreusable and untestable. They are
+// with DOM, audio and item management - unreusable and untestable. They are
 // now owned here as pure recognizers: no DOM, no globals, coordinates in
 // viewport-normalized units (x, y in 0..1), time in milliseconds. Pinch
 // *detection* stays where it was (classifyRuleBased + DynamicPinchGate +
@@ -723,12 +898,12 @@ export class MultiCameraFusion {
 //
 //   BoardGestureRecognizer  one hand: tap, drag, throw, hold, scrub, ghost
 //   TwoHandScale            two pinches on one item: scale only (the board
-//                           ruling — twist-roll is dead, rotation is the
+//                           ruling - twist-roll is dead, rotation is the
 //                           one-hand hold latch below)
 //   RotateSession           post-hold-latch rotation deltas
 //   ClapRecognizer          the deliberate prayer clap (pair level)
 //   ForcePullRecognizer     the claw: arm → aim → strain → snap (per hand)
-//   clawAimRay              the claw mouth's normal — the aim direction
+//   clawAimRay              the claw mouth's normal - the aim direction
 //   replayBoardGestures     run a recorded dataset through the recognizer
 //
 // Every threshold comes from DEFAULT_PROFILE so the Gesture Lab can
@@ -746,7 +921,7 @@ export class BoardGestureRecognizer {
   constructor(profile = DEFAULT_PROFILE, { handId = 0 } = {}) {
     this.profile = profile;
     this.handId = handId;
-    this.history = [];          // {x, y, t} — the throw window
+    this.history = [];          // {x, y, t} - the throw window
     this.pinched = false;
     this.ghost = false;
     this.pinchT = 0;
@@ -762,7 +937,7 @@ export class BoardGestureRecognizer {
 
   _peakVelocity(nowMs) {
     // stage.html v3.6: PEAK velocity across the last ~throwWindowMs,
-    // sampled in 2-frame steps, plus the final instant's velocity —
+    // sampled in 2-frame steps, plus the final instant's velocity -
     // a real throw carries its speed INTO the release.
     const h = this.history;
     const tEnd = h.length ? h[h.length - 1].t : nowMs;
@@ -787,7 +962,7 @@ export class BoardGestureRecognizer {
    *   x, y, pinched, nowMs,
    *   holding        caller has an item grabbed by this hand
    *   scrubAvailable an explodable model exists and the pinch is empty
-   *   muted          probation/garbage kill — taps are suppressed
+   *   muted          probation/garbage kill - taps are suppressed
    * }
    * Returns an array of event objects (possibly empty).
    */
@@ -806,7 +981,7 @@ export class BoardGestureRecognizer {
     const speed = speedOf(this.history);
 
     if (pinched && !this.pinched) {
-      // Pinch born — the ghost gate (stage v19.2): a pinch born at wave
+      // Pinch born - the ghost gate (stage v19.2): a pinch born at wave
       // speed is motion blur, not intent. It cannot grab; it self-heals
       // when the hand settles (below).
       this.pinchT = nowMs;
@@ -972,7 +1147,7 @@ export class ClapRecognizer {
 
   /**
    * hands: 0..2 of { wrist:{x,y}, mcp:{x,y}, handUp, softOpen,
-   *                  pinched, lastPinchT } — distances normalized by
+   *                  pinched, lastPinchT } - distances normalized by
    * viewport width, as in stage.html. opts: { anyHolding }.
    * Returns [{type:"clap"}] or [].
    */
@@ -1006,7 +1181,7 @@ export class ClapRecognizer {
       return [];
     }
     if (this.hist.length) {
-      // Palms merged into one detection at contact — honored only if
+      // Palms merged into one detection at contact - honored only if
       // the approach was qualified and closing when tracking died.
       const last = this.hist[this.hist.length - 1];
       const apart = this.hist.some(s =>
@@ -1047,7 +1222,7 @@ export class ForcePullRecognizer {
     this.targetId = null;
     this.litT = 0;
     this.readyFired = false;
-    this.ratioHist = [];        // {t, ratio} — the plunge window
+    this.ratioHist = [];        // {t, ratio} - the plunge window
   }
 
   /**
@@ -1075,7 +1250,7 @@ export class ForcePullRecognizer {
     const snap = ratio < p.pullSnapRatio ||
       (ratio < p.pullSnapSoftRatio && peak - ratio > p.pullSnapDrop);
 
-    // Pose streak with decay — a one-frame hiccup must not zero it.
+    // Pose streak with decay - a one-frame hiccup must not zero it.
     this.poseMs = frame.claw
       ? Math.min(1200, this.poseMs + dt)
       : Math.max(0, this.poseMs - dt * 5);
@@ -1152,7 +1327,7 @@ export class ForcePullRecognizer {
 /**
  * Replay a recorded landmark dataset through the board recognizer.
  * Pinch state is re-derived with classifyRuleBased + release hysteresis
- * (the live board's EMA/probation layers are not replayed — documented
+ * (the live board's EMA/probation layers are not replayed - documented
  * approximation). holding/scrub are board state, so replay exercises
  * pinch/tap/drag/hold timing only.
  */

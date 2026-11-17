@@ -5,8 +5,8 @@
 # server.py. Build with:  makepkg -f   (the source tarball is the
 # Linux release tarball from the same dist folder).
 pkgname=barehands-new
-pkgver=1.1.0
-pkgrel=2
+pkgver=1.2.0
+pkgrel=1
 pkgdesc="Barehands gesture board - new engine build (board recognizers, HaGRID pose set, shadow model)"
 arch=('any')
 url="https://github.com/satiralabs/barehands"

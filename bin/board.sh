@@ -16,8 +16,8 @@
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# board.sh — your AI's HANDS on the board. POSTs one JSON command to the
-# barehands server's /cmd channel (localhost only — this can reach
+# board.sh - your AI's HANDS on the board. POSTs one JSON command to the
+# barehands server's /cmd channel (localhost only - this can reach
 # nothing else). The server enforces its own action allowlist and the
 # media-airlock jail, so this is safe to hand to an AI assistant.
 #

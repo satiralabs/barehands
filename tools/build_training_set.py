@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Map a HaGRID landmark dataset onto engine pose labels and split it
-into train/test files (stratified by label, seeded — reproducible).
+into train/test files (stratified by label, seeded - reproducible).
 
 The split is by SAMPLE, not by user: the HaGRID skeleton export carries
 no per-user ids, so held-out accuracy here is an upper bound on
@@ -23,6 +23,8 @@ LABEL_MAP = {
     "ok": "pinch",
     "palm": "open",
     "stop": "open",
+    "stop_inverted": "open",
+    "three": "three",
     "fist": "fist",
     "one": "point",
     "peace": "victory",

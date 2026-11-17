@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 LABELS = ("pinch", "claw", "open", "fist", "point", "victory", "rock",
-          "littleFinger", "call", "thumbsUp", "thumbsDown")
+          "littleFinger", "call", "thumbsUp", "thumbsDown", "three")
 
 
 def sigmoid(value):

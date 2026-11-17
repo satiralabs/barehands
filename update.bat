@@ -1,5 +1,5 @@
 @echo off
-rem barehands — update to the newest version, showing what changed first.
+rem barehands - update to the newest version, showing what changed first.
 rem Copyright (C) 2026 Jared Rhodenizer
 rem SPDX-License-Identifier: AGPL-3.0-or-later
 rem

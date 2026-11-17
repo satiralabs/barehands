@@ -1,6 +1,6 @@
 // Fill a barehands landmark dataset's frames with engine features.
 // usage: node tools/extract_features.mjs DATASET.json [OUT.json]
-// Uses the real engine code — features are never re-implemented.
+// Uses the real engine code - features are never re-implemented.
 import { readFileSync, writeFileSync } from "node:fs";
 import { extractHandFeatures, featureNames } from "../gesture-engine.mjs";
 

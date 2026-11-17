@@ -3,7 +3,7 @@
 barehands landmark dataset format (barehands-landmarks/v1).
 
 Source exports: GestureDetectionConnoisseurs/preprocessed_hand_skeletons
-on Hugging Face — MediaPipe skeletons pre-extracted from HaGRID images
+on Hugging Face - MediaPipe skeletons pre-extracted from HaGRID images
 (HaGRID itself is CC BY-SA 4.0; see DATA-SOURCES.md). Local use only.
 
 usage: convert_hagrid_csv.py INPUT.csv OUTPUT.json

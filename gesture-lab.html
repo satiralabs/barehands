@@ -47,6 +47,18 @@
     .pose-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:9px; }
     .pose-grid button.active { outline:2px solid var(--green); }
     #status { min-height:26px; color:var(--warn); }
+    #lowq-status { min-height:22px; margin:10px 0 0; color:var(--muted);
+      font:13px 'SF Mono',Menlo,monospace; }
+    #lowq-hint { display:none; min-height:22px; margin:2px 0 0; color:var(--warn); }
+    #live-pose,#shadow-line { min-height:22px; margin:2px 0 0; color:var(--muted);
+      font:13px 'SF Mono',Menlo,monospace; }
+    #shadow-log { margin:4px 0 0; color:var(--muted);
+      font:12px 'SF Mono',Menlo,monospace; }
+    .lowq-toggle { display:flex; gap:10px; align-items:center; min-height:44px;
+      padding:8px 12px; border:1px solid var(--line); border-radius:10px;
+      background:rgba(0,0,0,.18); cursor:pointer; font-size:13px; color:var(--muted); }
+    .lowq-toggle input { width:18px; height:18px; accent-color:var(--green); flex:none; margin:0; }
+    .lowq-toggle span { color:var(--ink); }
     pre { overflow:auto; padding:14px; background:#020707; border-radius:10px;
       border:1px solid #19332f; color:#aee8df; }
     table { width:100%; border-collapse:collapse; }
@@ -106,10 +118,17 @@
             </select>
           </label>
         </div>
+        <label class="lowq-toggle"><input type="checkbox" id="lowq-toggle" checked>
+          <span>Low-quality camera mode</span>Steps the camera down and adapts when the picture is weak.</label>
         <div class="video-wrap">
           <video id="camera" autoplay playsinline muted></video>
           <canvas id="overlay"></canvas>
         </div>
+        <p id="lowq-status">Camera off.</p>
+        <p id="lowq-hint">Low light. Add light or move closer to the camera.</p>
+        <p id="live-pose">Live pose: no hand.</p>
+        <p id="shadow-line" hidden>Shadow model: off.</p>
+        <ul id="shadow-log" hidden></ul>
         <p id="status">Select camera & orientation, start camera, then hold each pose for 3 seconds.</p>
         <div class="pose-grid" id="poses"></div>
         <div class="actions">
@@ -188,13 +207,24 @@
   </main>
 
   <script type="module">
-    import { HandLandmarker, FilesetResolver } from
-      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
     import {
-      DEFAULT_PROFILE, LandmarkRecorder, StableHandTracker, deriveProfile,
-      extractHandFeatures, loadGestureProfile, replayDataset,
-      resetGestureProfile, saveGestureProfile
+      createHandLandmarker, createVision, loadTasksVision,
+      LOCAL_BUNDLE_URL, LOCAL_WASM_URL,
+      LowQualityPipeline, openCameraWithLadder
+    } from "./vendor/camera-pipeline.mjs";
+    import {
+      DEFAULT_PROFILE, LandmarkRecorder, PoseSmoother, StableHandTracker,
+      classifyRuleBased, deriveProfile, extractHandFeatures,
+      loadGestureProfile, replayDataset, resetGestureProfile,
+      saveGestureProfile
     } from "./gesture-engine.mjs";
+    import { createShadowRecognizer }
+      from "./gesture-recognizer-bridge.mjs";
+
+    // Offline models: the Tasks Vision bundle, wasm, and hand model load
+    // from this server first (vendor/tasks-vision/, data/models/); the CDN
+    // is only a fallback if a local file fails.
+    const { HandLandmarker, FilesetResolver } = await loadTasksVision();
 
     const poseNames = [
       ["relaxed", "Relaxed hand"], ["open", "Open palm"],
@@ -205,6 +235,36 @@
     const canvas = document.querySelector("#overlay");
     const ctx = canvas.getContext("2d");
     const status = document.querySelector("#status");
+    const lowqStatus = document.querySelector("#lowq-status");
+    const lowqHint = document.querySelector("#lowq-hint");
+    const lowqToggle = document.querySelector("#lowq-toggle");
+    const livePose = document.querySelector("#live-pose");
+    const shadowLine = document.querySelector("#shadow-line");
+    const shadowLog = document.querySelector("#shadow-log");
+
+    // Live pose readout (rule poses through the temporal smoother,
+    // so the line does not flicker) and the Google shadow model
+    // (?shadow=1 in the address). The shadow model only watches and
+    // compares; it never drives capture or the board.
+    const POSE_ORDER = ["pinch", "claw", "open", "fist", "point",
+      "victory", "three", "rock", "call", "littleFinger",
+      "thumbsUp", "thumbsDown"];
+    const smoother = new PoseSmoother();
+    const shadowOn = new URLSearchParams(location.search).has("shadow");
+    let shadow = null, shadowFrame = 0, shadowTotal = 0, shadowDisagree = 0;
+    if (shadowOn) {
+      shadowLine.hidden = false;
+      shadowLog.hidden = false;
+      shadowLine.textContent = "Shadow model: loading Google recognizer...";
+      createShadowRecognizer({
+        visionUrl: LOCAL_BUNDLE_URL, wasmRoot: LOCAL_WASM_URL
+      }).then(recognizer => {
+        shadow = recognizer;
+        shadowLine.textContent = recognizer
+          ? "Shadow model: on. Comparing Google's guess with the rules."
+          : "Shadow model: unavailable (model file missing). Rules still work.";
+      });
+    }
     const poseBox = document.querySelector("#poses");
     const cameraSelect = document.querySelector("#camera-select");
     const orientationSelect = document.querySelector("#orientation-select");
@@ -212,10 +272,27 @@
     const samples = [];
     const tracker = new StableHandTracker();
     let landmarker = null;
+    let lowq = null;
     let stream = null;
     let animation = 0;
     let capture = null;
     let lastVideoTime = -1;
+    let lastLowqLineAt = 0;
+
+    // Camera status line (resolution, fps, landmark quality, mode),
+    // throttled so the DOM is not touched every frame. The low-light
+    // hint is text, not colour alone.
+    function updateLowqLine(now) {
+      if (!lowq || now - lastLowqLineAt < 300) return;
+      lastLowqLineAt = now;
+      const s = lowq.status();
+      lowqStatus.textContent =
+        `${s.resolution} · ${s.fps} fps · ` +
+        `quality ${s.quality == null ? "-" : s.quality.toFixed(2)} · ${s.mode}` +
+        (s.conf < 0.7 ? ` · conf ${s.conf}` : "") +
+        (s.skip > 1 ? ` · every ${s.skip}th frame` : "");
+      lowqHint.style.display = s.lowLight ? "block" : "none";
+    }
 
     const CONNECTIONS = [
       [0,1],[1,2],[2,3],[3,4],
@@ -329,28 +406,18 @@
     async function startCamera(deviceId = null) {
       status.textContent = "Loading MediaPipe hand tracker...";
       if (!landmarker) {
-        const vision = await FilesetResolver.forVisionTasks(
-          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
-        landmarker = await HandLandmarker.createFromOptions(vision, {
-          baseOptions: {
-            modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
-            delegate: "GPU"
-          },
-          numHands: 2,
-          runningMode: "VIDEO",
-          minHandDetectionConfidence: 0.7,
-          minHandPresenceConfidence: 0.5
-        });
+        // Local bundle, wasm, and model first; CDN only if a local file fails.
+        const vision = await createVision({ FilesetResolver });
+        landmarker = await createHandLandmarker({ HandLandmarker }, vision);
+        lowq = new LowQualityPipeline(landmarker, { enabled: lowqToggle.checked });
       }
+      if (lowq) lowq.setEnabled(lowqToggle.checked);
 
       if (stream) stream.getTracks().forEach(track => track.stop());
       const selectedId = deviceId || cameraSelect.value;
-      const videoConstraints = { width: { ideal: 1280 }, height: { ideal: 720 } };
-      if (selectedId) videoConstraints.deviceId = { exact: selectedId };
-
-      stream = await navigator.mediaDevices.getUserMedia({
-        video: videoConstraints, audio: false
-      });
+      // Constraint ladder: 1280x720, then 640x480, 320x240, then any camera.
+      const opened = await openCameraWithLadder(selectedId || null, 1280, 720);
+      stream = opened.stream;
       video.srcObject = stream;
       await video.play();
       await populateCameras();
@@ -369,6 +436,9 @@
       stream = null;
       video.srcObject = null;
       capture = null;
+      lowq?.reset();
+      lowqStatus.textContent = "Camera off.";
+      lowqHint.style.display = "none";
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       document.querySelectorAll("#poses button").forEach(b => b.disabled = true);
       document.querySelector("#start-camera").disabled = false;
@@ -380,54 +450,108 @@
       if (stream) startCamera(cameraSelect.value);
     });
 
+    lowqToggle.addEventListener("change", () => {
+      lowq?.setEnabled(lowqToggle.checked);
+      status.textContent = lowqToggle.checked
+        ? "Low-quality camera mode on: the camera steps down and adapts when the picture is weak."
+        : "Low-quality camera mode off: fixed resolution, confidence 0.7, every frame.";
+    });
+
     function frame() {
       const now = performance.now();
       if (video.currentTime !== lastVideoTime) {
         lastVideoTime = video.currentTime;
-        const result = landmarker.detectForVideo(video, now);
-        const detections = (result.landmarks || []).map((landmarks, index) => ({
-          landmarks, handedness: result.handednesses?.[index]
-        }));
-        const hands = tracker.update(detections, now);
-        const activeHand = hands[0];
-        drawOverlay(activeHand, now);
+        // Low-quality pipeline: plain path on a good camera, adapts when
+        // the camera struggles (see vendor/camera-pipeline.mjs). A skipped
+        // frame leaves the last overlay in place rather than ageing the
+        // hand track out.
+        const det = lowq
+          ? lowq.detect(video, now)
+          : (() => {
+              const res = landmarker.detectForVideo(video, now);
+              return { skipped: false, landmarks: res.landmarks || [],
+                       handedness: res.handednesses || [] };
+            })();
+        if (!det.skipped) {
+          const detections = det.landmarks.map((landmarks, index) => ({
+            landmarks, handedness: det.handedness?.[index]
+          }));
+          const hands = tracker.update(detections, now);
+          const activeHand = hands[0];
+          drawOverlay(activeHand, now);
+          if (activeHand) {
+            const liveFeatures = extractHandFeatures(activeHand.landmarks);
+            lowq?.noteQuality(liveFeatures.quality);
+            const rulePoses = classifyRuleBased(liveFeatures);
+            const rawPose = POSE_ORDER.find(p => rulePoses[p]) || null;
+            const smoothed = smoother.update(rawPose, now);
+            livePose.textContent = smoothed.pose
+              ? `Live pose: ${smoothed.pose}${smoothed.stable ? "" : " (settling)"}`
+              : "Live pose: no clear pose.";
+            if (shadow && ++shadowFrame % 5 === 0) {
+              const out = shadow.recognize(video, now, rulePoses);
+              if (out) {
+                shadowTotal++;
+                const agree = !out.disagreements ||
+                  out.disagreements.length === 0;
+                if (!agree) {
+                  shadowDisagree++;
+                  const li = document.createElement("li");
+                  li.textContent = `Google said ${out.pose} ` +
+                    `(${Math.round(out.score * 100)}%) but the rules did not.`;
+                  shadowLog.prepend(li);
+                  while (shadowLog.children.length > 5)
+                    shadowLog.lastChild.remove();
+                }
+                shadowLine.textContent = `Shadow model: Google ` +
+                  `${out.pose || "none"} ${Math.round(out.score * 100)}% - ` +
+                  `${agree ? "agrees" : "disagrees"} with rules ` +
+                  `(${shadowDisagree}/${shadowTotal} disagreements).`;
+              }
+            }
+          } else {
+            smoother.reset();
+            livePose.textContent = "Live pose: no hand.";
+          }
 
-        if (capture && activeHand) {
-          const hand = activeHand;
-          const features = extractHandFeatures(hand.landmarks);
-          if (features.quality >= DEFAULT_PROFILE.minQuality) {
-            const orientation = orientationSelect.value;
-            const cameraName = cameraSelect.options[cameraSelect.selectedIndex]?.text || "Camera";
-            const sample = {
-              label: capture.label,
-              orientation,
-              camera: cameraName,
-              handedness: hand.handedness,
-              landmarks: hand.landmarks.map(p => ({ x:p.x, y:p.y, z:p.z || 0 })),
-              features
-            };
-            samples.push(sample);
-            recorder.add({
-              label: capture.label,
-              orientation,
-              camera: cameraName,
-              landmarks: hand.landmarks,
-              handedness: hand.handedness,
-              nowMs: now
-            });
-          }
-          if (now >= capture.until) {
+          if (capture && activeHand) {
+            const hand = activeHand;
+            const features = extractHandFeatures(hand.landmarks);
+            if (features.quality >= DEFAULT_PROFILE.minQuality) {
+              const orientation = orientationSelect.value;
+              const cameraName = cameraSelect.options[cameraSelect.selectedIndex]?.text || "Camera";
+              const sample = {
+                label: capture.label,
+                orientation,
+                camera: cameraName,
+                handedness: hand.handedness,
+                landmarks: hand.landmarks.map(p => ({ x:p.x, y:p.y, z:p.z || 0 })),
+                features
+              };
+              samples.push(sample);
+              recorder.add({
+                label: capture.label,
+                orientation,
+                camera: cameraName,
+                landmarks: hand.landmarks,
+                handedness: hand.handedness,
+                nowMs: now
+              });
+            }
+            if (now >= capture.until) {
+              capture.button.classList.remove("active");
+              status.textContent = `Captured ${capture.label} [${orientationSelect.value}]. Next orientation or pose.`;
+              capture = null;
+              showCounts();
+            }
+          } else if (capture && now >= capture.until) {
             capture.button.classList.remove("active");
-            status.textContent = `Captured ${capture.label} [${orientationSelect.value}]. Next orientation or pose.`;
+            status.textContent = "No reliable hand visible. Try holding hand in clear view.";
             capture = null;
-            showCounts();
           }
-        } else if (capture && now >= capture.until) {
-          capture.button.classList.remove("active");
-          status.textContent = "No reliable hand visible. Try holding hand in clear view.";
-          capture = null;
         }
       }
+      updateLowqLine(now);
       animation = requestAnimationFrame(frame);
     }
 

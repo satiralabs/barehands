@@ -1,6 +1,6 @@
 # barehands
 
-> **About this copy:** this is my (abenih's) working copy of [barehands](https://github.com/jaredrhod/barehands), created by Jared Rhodenizer. The board, the server, and most of this README are the original project's. My additions are the reusable gesture engine (`gesture-engine.mjs`), the Gesture Lab (`gesture-lab.html`), and the gesture classifier trainer (`tools/train_gesture_classifier.py`), with tests under `tests/` — see *Gesture Lab* below. Same AGPL-3.0 license; the original author's credits stay in *Credits* and *License* at the bottom.
+> **About this copy:** this is my (abenih's) working copy of [barehands](https://github.com/jaredrhod/barehands), created by Jared Rhodenizer. The board, the server, and most of this README are the original project's. My additions are the reusable gesture engine (`gesture-engine.mjs`), the Gesture Lab (`gesture-lab.html`), and the gesture classifier trainer (`tools/train_gesture_classifier.py`), with tests under `tests/` - see *Gesture Lab* below. Same AGPL-3.0 license; the original author's credits stay in *Credits* and *License* at the bottom.
 
 **Runs on:** a webcam and Chrome; works with any AI. Any program that writes a file or curls localhost can be its brain.
 
@@ -20,7 +20,7 @@ cd barehands
 python3 server.py
 ```
 
-On Windows run `run.bat` instead: a clean Windows 11 has no Python but leaves a Microsoft Store stub on the PATH that looks like one, and `run.bat` finds an interpreter that actually works. Open **http://127.0.0.1:8794/stage.html** in Chrome, allow the camera, and wave. That's the whole install: the server is stdlib Python, and the page loads its hand tracking (Google MediaPipe) and 3D (three.js) from CDNs on first run.
+On Windows run `run.bat` instead: a clean Windows 11 has no Python but leaves a Microsoft Store stub on the PATH that looks like one, and `run.bat` finds an interpreter that actually works. Open **http://127.0.0.1:8794/stage.html** in Chrome, allow the camera, and wave. That's the whole install: the server is stdlib Python, hand tracking loads from this server (vendored MediaPipe, no internet needed), and only the 3D library (three.js) still comes from a CDN on first run.
 
 **Already in a Claude Code session with your agent?** One sentence does it all: *"clone https://github.com/abenih/barehands.git, then read barehands/barehands.md and set me up."* Your agent installs it, configures it, and wires itself in.
 
@@ -77,8 +77,8 @@ entirely held-out users.
 
 ### Board gestures in the engine
 
-The board's gesture laws — previously only inside `stage.html`, interleaved
-with DOM and item code — now also live in `gesture-engine.mjs` as pure,
+The board's gesture laws - previously only inside `stage.html`, interleaved
+with DOM and item code - now also live in `gesture-engine.mjs` as pure,
 unit-tested recognizers (no DOM, viewport-normalized coordinates, every
 threshold in the shared gesture profile, so the Lab can calibrate them):
 
@@ -88,12 +88,12 @@ threshold in the shared gesture profile, so the Lab can calibrate them):
   (the ~1 s stillness promotion, drift re-anchors), `scrubstart`/`scrub`/
   `scrubend` (the empty-pinch exploded-view scrub), and `ghostpinch` (a
   pinch born at wave speed cannot grab; it self-heals as the hand settles).
-- `TwoHandScale` — two-hand stretch is scale only (0.12–12x, with the carry
+- `TwoHandScale` - two-hand stretch is scale only (0.12–12x, with the carry
   midpoint); rotation belongs to the one-hand hold latch, `RotateSession`.
-- `ClapRecognizer` — the deliberate prayer clap: hands apart first, then
+- `ClapRecognizer` - the deliberate prayer clap: hands apart first, then
   palms together with fingers up and open hands, an 800 ms post-pinch
   blackout, a cooldown, and the merged-detection vanish read.
-- `ForcePullRecognizer` + `clawAimRay` — the claw: it arms only when the
+- `ForcePullRecognizer` + `clawAimRay` - the claw: it arms only when the
   hooks form from a fresh open hand, aims along the claw mouth's normal in
   a narrow cone, builds strain over a 4 s ramp, unlocks the snap at 2 s,
   and fires `pull` on the snap (an early snap is a `pullmisfire`).
@@ -101,7 +101,7 @@ threshold in the shared gesture profile, so the Lab can calibrate them):
   the recognizer and counts events (pinch re-derived from the rule
   classifier with release hysteresis).
 
-`stage.html` still runs its original inline copy of these laws — migrating
+`stage.html` still runs its original inline copy of these laws - migrating
 its call sites onto the recognizers is the next slice, so the board's
 behaviour is unchanged by this one. Run the tests with
 `node tests/gesture-engine.test.mjs`.
@@ -110,27 +110,51 @@ behaviour is unchanged by this one. Run the tests with
 
 The rule classifier now also reads static poses from per-finger
 extension (arch ratios, fitted on real photos): `fist`, `point`,
-`victory`, `rock`, `littleFinger`, `call`, `thumbsUp`, `thumbsDown`,
-and a `fingerCount` (0-5). Fitting and evaluation used **HaGRID**
-(CC BY-SA 4.0) — 15,855 real hands with MediaPipe skeletons,
-downloaded account-free from Hugging Face mirrors; everything lives
-under `data/` (gitignored) and is re-fetchable with
+`victory`, `three`, `rock`, `littleFinger`, `call`, `thumbsUp`,
+`thumbsDown`, and a `fingerCount` (0-5). Fitting and evaluation used
+**HaGRID** (CC BY-SA 4.0) - 15,855 real hands with MediaPipe
+skeletons, downloaded account-free from Hugging Face mirrors;
+everything lives under `data/` (gitignored) and is re-fetchable with
 `tools/fetch_assets.sh`. Provenance and licenses: `DATA-SOURCES.md`.
 
 Measured on those 15,855 hands (`tools/evaluate_poses.mjs`): pose
-recall 74-89%, false-fire under 3.5% except `point`/`victory`, whose
+recall 72-89%, false-fire under 3.5% except `point`/`victory`, whose
 extra hits are HaGRID classes with identical finger shapes (mute,
-thumb_index, three2). The dependency-free trainer
-(`tools/train_gesture_classifier.py`) now trains the pose labels too:
-on a stratified held-out split it scores **89.3% top-1 across 10
-classes** (`tools/evaluate_classifier.py`). The split is by sample,
-not by user — the export has no user ids — so the model file stays
-`productionReady: false` until it is validated on held-out users.
+thumb_index, three2). `three` (index+middle+ring, pinky folded)
+recalls 86% at 1.5% false-fire. `littleFinger` now requires the
+thumb folded, which cut its false fires from 2.7% to 0.3% (it used
+to fire on 80% of `call` frames); recall fell 85% to 75% because
+the thumb genuinely extends on some little-finger photos. The
+dependency-free trainer (`tools/train_gesture_classifier.py`) now
+trains the pose labels too: on a stratified held-out split it scores
+**89.3% top-1 across 11 classes** (`tools/evaluate_classifier.py`).
 
-Google's pretrained Gesture Recognizer (Apache-2.0, ~8 MB) is wired
-as an optional **shadow** layer in `gesture-recognizer-bridge.mjs`:
-it cross-checks the rule poses live and reports disagreements, but
-never drives the board.
+The sample-split number was checked honestly against held-out
+*users* (`tools/extract_user_sample.py` + `REPORT.md`): 801 HaGRID
+photos from 20 users, landmarks from the local model, 8 users held
+out. The retrained classifier scores **94.2% top-1 on the held-out
+users** (259 frames), and the old sample-split model scores 94.6%
+on the same users, so the 89.3% was not flattered by user leakage.
+The model file still stays `productionReady: false`: only 8 held-out
+users, `littleFinger` and `claw` have no held-out-user evidence at
+all, and detection on still photos is 77.2%.
+
+Poses are steadied by `PoseSmoother` (temporal vote + hysteresis +
+dwell) and the tracker holds the last good landmarks briefly when a
+hand is occluded instead of jumping. The Lab shows the smoothed live
+pose and, with `?shadow=1`, Google's pretrained Gesture Recognizer
+(Apache-2.0, ~8 MB) as a **shadow** layer
+(`gesture-recognizer-bridge.mjs`): it cross-checks the rule poses
+live and logs disagreements, but never drives the board.
+
+Hand tracking runs fully offline: Tasks Vision 0.10.14 is vendored
+under `vendor/tasks-vision/` and the hand model under `data/models/`,
+loaded from this server first with a CDN fallback. Cheap cameras
+get a low-quality mode (resolution ladder, adaptive confidence,
+low-light boost, frame skipping, ROI re-acquisition) in
+`vendor/camera-pipeline.mjs`, toggled in the Lab and with
+`?lowq=0` on the board. Only the 3D library (three.js) still needs
+the internet on first run.
 
 ## Streaming / recording (advanced)
 
@@ -138,7 +162,7 @@ Two pages, one scene: the tracker page owns your camera; `stage.html?role=render
 
 ## Credits
 
-Hand tracking by [Google MediaPipe](https://developers.google.com/mediapipe) (Apache 2.0). 3D rendering by [three.js](https://threejs.org) (MIT). Both load from public CDNs; this repo redistributes neither.
+Hand tracking by [Google MediaPipe](https://developers.google.com/mediapipe) (Apache 2.0), vendored in `vendor/tasks-vision/` and loaded from this server. 3D rendering by [three.js](https://threejs.org) (MIT), still loaded from a public CDN.
 
 ## Updating
 

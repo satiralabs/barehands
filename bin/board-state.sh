@@ -16,7 +16,7 @@
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# board-state.sh — your AI's EYES on the board. Read-only GET of the
+# board-state.sh - your AI's EYES on the board. Read-only GET of the
 # server's /state (the tracker's last scene heartbeat), rendered one
 # line per item so an assistant can answer "what's on the board?" from
 # truth instead of memory. Reaches nothing but localhost; changes nothing.
@@ -52,7 +52,7 @@ if [ -z "$PYBIN" ]; then
 fi
 PORT=$("$PYBIN" -c "import json;print(json.load(open('$DIR/barehands.json')).get('port',8794))" 2>/dev/null || echo 8794)
 STATE=$(curl -sS --max-time 3 "http://127.0.0.1:$PORT/state" 2>/dev/null) || {
-    echo "The board is dark — the barehands server isn't running."; exit 1; }
+    echo "The board is dark - the barehands server isn't running."; exit 1; }
 export STATE
 "$PYBIN" <<'PY'
 import json, os
@@ -74,14 +74,14 @@ def zone(x, y):
     v = "top" if y < 0.33 else ("middle" if y < 0.67 else "bottom")
     return "center" if (h == "center" and v == "middle") else f"{v}-{h}"
 
-print(f"ON THE BOARD — {len(items)} item(s), last tracker heartbeat:")
+print(f"ON THE BOARD - {len(items)} item(s), last tracker heartbeat:")
 for i in items:
     t = i.get("type", "?")
     title = i.get("title") or ""
     src = os.path.basename(i.get("src") or "")
     if t == "card":
         body = (i.get("body") or "").replace("\n", " ")[:70]
-        desc = f'card "{title}"' + (f" — {body}" if body else "")
+        desc = f'card "{title}"' + (f" - {body}" if body else "")
     elif t == "img":
         desc = f"image {src}" + (" (fx, frameless)" if i.get("fxf") else "") \
                + (" (video)" if i.get("vd") else "")
